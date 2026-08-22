@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import * as api from "./supabaseApi.js";
+import { supabase } from "./supabaseClient.js";
 
 // ---------------------------------------------------------------------------
 // useTakeoverReversalVote — mirrors useEndGameVote/usePauseVote exactly
@@ -37,8 +38,24 @@ export function useTakeoverReversalVote({ roomId, myPlayerId, mySecret }) {
   useEffect(() => {
     if (!roomId) return;
     refresh();
-    const id = setInterval(refresh, 2000);
+    const id = setInterval(refresh, 8000);
     return () => clearInterval(id);
+  }, [roomId, refresh]);
+
+  useEffect(() => {
+    if (!supabase || !roomId) return;
+    const channel = supabase
+      .channel(`takeover_reversal_vote:${roomId}`)
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "takeover_reversal_proposals", filter: `room_id=eq.${roomId}` },
+        refresh
+      )
+      .on("postgres_changes", { event: "*", schema: "public", table: "takeover_reversal_votes" }, refresh)
+      .subscribe();
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, [roomId, refresh]);
 
   const propose = useCallback(

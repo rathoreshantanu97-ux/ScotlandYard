@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import * as api from "./supabaseApi.js";
+import { supabase } from "./supabaseClient.js";
 
 // ---------------------------------------------------------------------------
 // useResumeVote — mirrors usePauseVote exactly (same proposal/vote
@@ -8,6 +9,9 @@ import * as api from "./supabaseApi.js";
 // unlike every other consequential group action in this game. Per
 // explicit instruction, resuming now requires the same full-agreement
 // vote as pausing itself.
+//
+// v3.42 -- realtime, not poll-only. See usePauseVote.js for the shared
+// reasoning.
 // ---------------------------------------------------------------------------
 export function useResumeVote({ roomId, myPlayerId, mySecret }) {
   const [proposal, setProposal] = useState(null);
@@ -33,8 +37,20 @@ export function useResumeVote({ roomId, myPlayerId, mySecret }) {
   useEffect(() => {
     if (!roomId) return;
     refresh();
-    const id = setInterval(refresh, 2000);
+    const id = setInterval(refresh, 8000);
     return () => clearInterval(id);
+  }, [roomId, refresh]);
+
+  useEffect(() => {
+    if (!supabase || !roomId) return;
+    const channel = supabase
+      .channel(`resume_vote:${roomId}`)
+      .on("postgres_changes", { event: "*", schema: "public", table: "resume_proposals", filter: `room_id=eq.${roomId}` }, refresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: "resume_votes" }, refresh)
+      .subscribe();
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, [roomId, refresh]);
 
   const propose = useCallback(async () => {

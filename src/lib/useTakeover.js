@@ -1,12 +1,18 @@
 import { useState, useEffect, useCallback } from "react";
 import * as api from "./supabaseApi.js";
+import { supabase } from "./supabaseClient.js";
 
 // ---------------------------------------------------------------------------
-// useTakeover — polls for an active takeover event in this room (same
-// polling approach as chat/end-game-vote). Exposes the event plus every
-// action a player might take depending on their role in the flow (host
-// deciding, nominating, voting), plus flag/cancel used to drive the
-// inactivity-detection side of things.
+// useTakeover — realtime (v3.42), fallback-polls for an active takeover
+// event in this room. Exposes the event plus every action a player might
+// take depending on their role in the flow (host deciding, nominating,
+// voting), plus flag/cancel used to drive the inactivity-detection side
+// of things.
+//
+// Subscribes to three tables: takeover_events (has room_id, filtered),
+// takeover_nominations and takeover_votes (neither has a room_id column,
+// only event_id -- subscribed unfiltered, same negligible-overhead
+// tradeoff used for pause_votes/end_game_votes elsewhere).
 // ---------------------------------------------------------------------------
 export function useTakeover({ roomId, myPlayerId, mySecret }) {
   const [event, setEvent] = useState(null);
@@ -25,8 +31,21 @@ export function useTakeover({ roomId, myPlayerId, mySecret }) {
   useEffect(() => {
     if (!roomId) return;
     refresh();
-    const id = setInterval(refresh, 2000);
+    const id = setInterval(refresh, 8000);
     return () => clearInterval(id);
+  }, [roomId, refresh]);
+
+  useEffect(() => {
+    if (!supabase || !roomId) return;
+    const channel = supabase
+      .channel(`takeover:${roomId}`)
+      .on("postgres_changes", { event: "*", schema: "public", table: "takeover_events", filter: `room_id=eq.${roomId}` }, refresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: "takeover_nominations" }, refresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: "takeover_votes" }, refresh)
+      .subscribe();
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, [roomId, refresh]);
 
   const decide = useCallback(

@@ -1,12 +1,15 @@
 import { useState, useEffect, useCallback } from "react";
 import * as api from "./supabaseApi.js";
+import { supabase } from "./supabaseClient.js";
 
 // ---------------------------------------------------------------------------
-// useEndGameVote — polls for an active end-game proposal in this room
-// every 2s (simple polling, same reasoning as chat -- a vote with a 60s
-// window doesn't need realtime-precision updates, and this avoids a
-// second realtime subscription just for this). Exposes the current
-// proposal state (if any) plus propose/vote actions.
+// useEndGameVote — v3.42: realtime, not poll-only. A Postgres realtime
+// subscription on end_game_proposals (filtered to this room) and
+// end_game_votes (unfiltered -- that table has no room_id column of its
+// own, only proposal_id) triggers an immediate refresh() the moment
+// either changes, addressing reported lag where another player's vote
+// took up to 2s to show up. The poll below stays as a resilience
+// fallback for a missed realtime event or a reconnect gap.
 // ---------------------------------------------------------------------------
 export function useEndGameVote({ roomId, myPlayerId, mySecret }) {
   const [proposal, setProposal] = useState(null);
@@ -32,8 +35,20 @@ export function useEndGameVote({ roomId, myPlayerId, mySecret }) {
   useEffect(() => {
     if (!roomId) return;
     refresh();
-    const id = setInterval(refresh, 2000);
+    const id = setInterval(refresh, 8000);
     return () => clearInterval(id);
+  }, [roomId, refresh]);
+
+  useEffect(() => {
+    if (!supabase || !roomId) return;
+    const channel = supabase
+      .channel(`end_game_vote:${roomId}`)
+      .on("postgres_changes", { event: "*", schema: "public", table: "end_game_proposals", filter: `room_id=eq.${roomId}` }, refresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: "end_game_votes" }, refresh)
+      .subscribe();
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, [roomId, refresh]);
 
   const propose = useCallback(async () => {
